@@ -398,9 +398,9 @@ if wm_b64:
 @st.cache_resource(show_spinner=False)
 def load_model():
     d = os.path.dirname(os.path.abspath(__file__))
-    m = joblib.load(os.path.join(d, "streamlit_app", "model.pkl"))
-    p = joblib.load(os.path.join(d, "streamlit_app", "preprocessor.pkl"))
-    with open(os.path.join(d, "streamlit_app", "feature_config.json")) as f:
+    m = joblib.load(os.path.join(d, "model.pkl"))
+    p = joblib.load(os.path.join(d, "preprocessor.pkl"))
+    with open(os.path.join(d, "feature_config.json")) as f:
         c = json.load(f)
     return m, p, c
 
