@@ -1,7 +1,5 @@
 # Data & models (too big for GitHub)
 heart.csv
-streamlit_app/model.pkl
-streamlit_app/preprocessor.pkl
 outputs/
 
 # Python cache
