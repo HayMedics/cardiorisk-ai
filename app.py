@@ -19,6 +19,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+# Force sidebar to always be visible
+st.markdown("""
+<style>
+[data-testid="stSidebar"] {display: block !important; min-width: 320px !important;}
+[data-testid="collapsedControl"] {display: block !important;}
+</style>
+""", unsafe_allow_html=True)
 
 # ── Logo loader ───────────────────────────────────────────────
 def img_b64(folder, names):
