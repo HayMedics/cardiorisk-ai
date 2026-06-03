@@ -1,0 +1,17 @@
+# Data & models (too big for GitHub)
+heart.csv
+streamlit_app/model.pkl
+streamlit_app/preprocessor.pkl
+outputs/
+
+# Python cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# Environment
+.conda/
+.env
