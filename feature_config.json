@@ -1,0 +1,39 @@
+{
+  "CONT_FEATURES": [
+    "age",
+    "trestbps",
+    "chol",
+    "thalach",
+    "oldpeak",
+    "ca",
+    "age_sex_interaction",
+    "hr_reserve",
+    "pct_max_hr",
+    "metabolic_score",
+    "framingham_proxy"
+  ],
+  "CAT_FEATURES": [
+    "cp",
+    "restecg",
+    "slope",
+    "exang",
+    "sex",
+    "fbs",
+    "thal",
+    "age_risk",
+    "chrono_incompetence",
+    "high_risk_ett",
+    "bp_elevated",
+    "chol_elevated"
+  ],
+  "OPTIMAL_THRESHOLD": 0.18,
+  "C_FN": 10,
+  "C_FP": 1,
+  "model_auc": 0.8745,
+  "model_sensitivity": 1.0,
+  "model_specificity": 0.5152,
+  "model_ppv": 0.6364,
+  "model_npv": 1.0,
+  "random_seed": 42,
+  "description": "Stacking Ensemble - labels corrected"
+}
