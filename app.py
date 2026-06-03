@@ -19,6 +19,25 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+# Force sidebar to be visible (Streamlit Cloud fix)
+st.markdown("""
+<style>
+[data-testid="stSidebar"] {
+    display: block !important;
+    visibility: visible !important;
+    min-width: 320px !important;
+    width: 320px !important;
+    transform: translateX(0px) !important;
+}
+[data-testid="collapsedControl"] {
+    display: block !important;
+    visibility: visible !important;
+}
+.stApp > div:first-child {
+    padding-left: 0 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 # Force sidebar to always be visible
 st.markdown("""
 <style>
