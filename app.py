@@ -893,33 +893,45 @@ elif "What-If" in page:
             st.pyplot(fig_sim, use_container_width=True)
             plt.close(fig_sim)
 
-       # Clinical plausibility check
-warnings_list = []
-sim_pct_max = sim_thalach / (220 - sim_age)
-if sim_pct_max < 0.65:
-    warnings_list.append(
-        f"⚠ Max HR of {sim_thalach} bpm is only {sim_pct_max:.0%} of predicted max "
-        f"({220-sim_age} bpm) for age {sim_age} — severe chronotropic incompetence. "
-        f"This is clinically implausible for a healthy patient."
-    )
-if sim_age < 40 and sim_oldpeak >= 2.0:
-    warnings_list.append(
-        f"⚠ ST depression {sim_oldpeak} mm at age {sim_age} is unusual — "
-        f"more typical in older patients with established CAD."
-    )
-if sim_age < 30 and sim_trestbps >= 160:
-    warnings_list.append(
-        f"⚠ Stage 2 hypertension at age {sim_age} suggests secondary causes "
-        f"(renal, endocrine) rather than primary hypertension."
-    )
-
-if warnings_list:
-    st.markdown('<div class="sec-head" style="margin-top:20px;">⚠ Clinical Plausibility Check</div>',
-                unsafe_allow_html=True)
     for w in warnings_list:
         st.markdown(f'<div class="alert alert-warn">{w}</div>',
                     unsafe_allow_html=True)
+        # ── Clinical plausibility check ──
+        warnings_list = []
+        denom = max(220 - sim_age, 1)
+        sim_pct_max = sim_thalach / denom
+
+        if sim_pct_max < 0.65:
+            warnings_list.append(
+                f"⚠ Max HR of {sim_thalach} bpm is only {sim_pct_max:.0%} of predicted max "
+                f"({220-sim_age} bpm) for age {sim_age} — severe chronotropic incompetence. "
+                f"This is clinically implausible for an otherwise healthy patient."
+            )
+        if sim_age < 40 and sim_oldpeak >= 2.0:
+            warnings_list.append(
+                f"⚠ ST depression {sim_oldpeak} mm at age {sim_age} is unusual — "
+                f"more typical in older patients with established CAD."
+            )
+        if sim_age < 30 and sim_trestbps >= 160:
+            warnings_list.append(
+                f"⚠ Stage 2 hypertension at age {sim_age} suggests secondary causes "
+                f"(renal, endocrine) rather than primary hypertension."
+            )
+        if sim_chol >= 400:
+            warnings_list.append(
+                f"⚠ Cholesterol of {sim_chol} mg/dL is extremely high — "
+                f"consider familial hypercholesterolaemia."
+            )
+
+        if warnings_list:
+            st.markdown('<div class="sec-head" style="margin-top:20px;">⚠ Clinical Plausibility Check</div>',
+                        unsafe_allow_html=True)
+            for w in warnings_list:
+                st.markdown(f'<div class="alert alert-warn">{w}</div>',
+                            unsafe_allow_html=True)
+                            
         # Comparison table
+        
         st.markdown('<div class="sec-head" style="margin-top:20px;">📊 Side-by-Side Comparison</div>',
                     unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
