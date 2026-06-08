@@ -1,9 +1,9 @@
 """
 CardioRisk AI v2 — HayMedics Academy
-NEW FEATURES:
-  + SHAP explainability per patient
-  + PDF clinical report download
-  + What-if simulator
+FINAL CORRECTED VERSION with:
+  + SHAP-style feature contributions
+  + Downloadable PDF clinical report
+  + What-If simulator with clinical plausibility checks
 Research Use Only
 """
 
@@ -54,7 +54,6 @@ def img_b64(folder, names):
 BASE = os.path.dirname(os.path.abspath(__file__))
 logo_mime, logo_b64 = img_b64(BASE, ["HayMedics_Academy06.jpg","HMA.jpg","HMA_PNG.png","HMA_ICON.jpg"])
 icon_mime, icon_b64 = img_b64(BASE, ["HMA_ICON.jpg","HMA_ICON_PNG.png"])
-wm_mime,   wm_b64   = img_b64(BASE, ["HMA_ICON_PNG.png","HMA_ICON.jpg"])
 
 logo_tag = f'<img src="data:image/{logo_mime};base64,{logo_b64}" style="height:52px;"/>' if logo_b64 else '<span style="font-size:1.4rem;font-weight:900;color:#fff;">Hay<span style="color:#F5A623;">Medics</span> Academy</span>'
 icon_tag = f'<img src="data:image/{icon_mime};base64,{icon_b64}" style="height:44px;border-radius:8px;"/>' if icon_b64 else "🫀"
@@ -223,31 +222,20 @@ def predict_one(patient_dict):
     prob = float(model.predict_proba(X)[0,1])
     return prob, X
 
-# ── Feature contribution (lightweight, no SHAP library needed) ──
+# ── Feature contribution (perturbation-based) ──
 def feature_contributions(patient_dict):
-    """
-    Compute per-feature contribution by perturbation:
-    For each feature, hold others constant at population median, vary this feature
-    Returns: dict of feature -> contribution score (-1 to +1)
-    """
     base_prob, _ = predict_one(patient_dict)
-
-    # Population means (approximate from Cleveland dataset)
     baseline = {
         'age':54, 'sex':0.68, 'cp':1.0, 'trestbps':131, 'chol':246,
         'fbs':0.15, 'restecg':0.5, 'thalach':150, 'exang':0.33,
         'oldpeak':1.04, 'slope':1.4, 'ca':0.67, 'thal':2.31
     }
-
     contribs = {}
     for feat in patient_dict.keys():
-        # Compute prediction with this feature replaced by baseline
         perturbed = patient_dict.copy()
         perturbed[feat] = baseline[feat]
         perturbed_prob, _ = predict_one(perturbed)
-        # Contribution = how much patient's value moves prediction vs baseline
         contribs[feat] = base_prob - perturbed_prob
-
     return contribs, base_prob
 
 # ── Plots ───────────────────────────────────────────────────
@@ -273,35 +261,25 @@ def plot_gauge(prob):
     return fig
 
 def plot_contributions(contribs):
-    """Horizontal bar chart of feature contributions"""
-    # Filter to non-zero contributions and sort
     items = [(k, v) for k, v in contribs.items() if abs(v) > 0.001]
     items.sort(key=lambda x: abs(x[1]), reverse=True)
-    items = items[:10]  # Top 10
-
+    items = items[:10]
     names = [k for k, _ in items]
     values = [v for _, v in items]
     colors = ['#DC2626' if v > 0 else '#059669' for v in values]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
+    fig.patch.set_facecolor('white'); ax.set_facecolor('white')
     y_pos = np.arange(len(names))
     bars = ax.barh(y_pos, values, color=colors, alpha=0.85, edgecolor='white', linewidth=1.5)
-
     ax.set_yticks(y_pos)
     ax.set_yticklabels(names, fontsize=10, color='#0D1B4B')
     ax.invert_yaxis()
     ax.axvline(0, color='#0D1B4B', lw=1, zorder=2)
     ax.set_xlabel('Contribution to CAD Probability', fontsize=10, color='#0D1B4B', fontweight='600')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_color('#DDE3F5')
-    ax.spines['bottom'].set_color('#DDE3F5')
+    ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#DDE3F5'); ax.spines['bottom'].set_color('#DDE3F5')
     ax.tick_params(colors='#8894B8')
-
-    # Value labels
     for bar, val in zip(bars, values):
         w = bar.get_width()
         label_x = w + (0.005 if w >= 0 else -0.005)
@@ -309,32 +287,26 @@ def plot_contributions(contribs):
                 f'{val:+.3f}', va='center',
                 ha='left' if w >= 0 else 'right',
                 fontsize=8, color='#0D1B4B', fontfamily='monospace')
-
     ax.text(0.99, 0.02, '🔴 Increases risk    🟢 Decreases risk',
             transform=ax.transAxes, ha='right', va='bottom',
             fontsize=8, color='#8894B8', style='italic')
-
     plt.tight_layout()
     return fig
 
 # ── PDF Report Generation ───────────────────────────────────
 def generate_pdf_report(patient, prob, contribs, threshold, flags):
-    """Generate a clinical PDF report"""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch, cm
-    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
-                                     TableStyle, PageBreak, Image)
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
     from reportlab.lib.colors import HexColor, white
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.lib.enums import TA_CENTER
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm,
                             leftMargin=2*cm, rightMargin=2*cm)
-
     styles = getSampleStyleSheet()
     navy = HexColor('#0D1B4B')
-    gold = HexColor('#F5A623')
 
     title_style = ParagraphStyle('Title', parent=styles['Heading1'],
                                   fontSize=20, textColor=navy, alignment=TA_CENTER,
@@ -350,17 +322,14 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
                                  spaceAfter=6, fontName='Helvetica')
 
     story = []
-
-    # Header
     story.append(Paragraph("CardioRisk AI — Clinical Risk Report", title_style))
     story.append(Paragraph("HayMedics Academy &nbsp;·&nbsp; Coronary Artery Disease Risk Assessment", sub_style))
 
-    # Report meta
     timestamp = datetime.now().strftime("%d %B %Y · %H:%M")
     meta_data = [
         ['Report Generated:', timestamp],
         ['Model:', 'Stacking Ensemble (Calibrated)'],
-        ['Dataset:', 'Cleveland Clinic Foundation 1981–1984 (n=302)'],
+        ['Dataset:', 'Cleveland Clinic 1981-1984 (n=302)'],
         ['Standards:', 'TRIPOD-AI'],
     ]
     meta_table = Table(meta_data, colWidths=[5*cm, 11*cm])
@@ -375,10 +344,8 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
     story.append(meta_table)
     story.append(Spacer(1, 0.3*cm))
 
-    # Result box
     label_full = "Low Risk" if prob < threshold else ("Moderate Risk" if prob < 0.5 else "High Risk")
     result_color = '#059669' if prob < threshold else ('#D97706' if prob < 0.5 else '#DC2626')
-
     result_data = [[
         Paragraph(f'<b>CAD Probability:</b> <font size=20 color="{result_color}">{prob:.1%}</font>', body_style),
         Paragraph(f'<b>Category:</b> <font color="{result_color}"><b>{label_full.upper()}</b></font>', body_style),
@@ -393,7 +360,6 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
     ]))
     story.append(result_table)
 
-    # Patient data
     story.append(Paragraph("Patient Clinical Data", head_style))
     cp_map = {0:"Typical Angina", 1:"Atypical Angina", 2:"Non-anginal Pain", 3:"Asymptomatic"}
     ecg_map = {0:"Normal", 1:"ST-T Abnormality", 2:"LVH"}
@@ -427,18 +393,16 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
     ]))
     story.append(pdata_table)
 
-    # Top contributing features
     story.append(Paragraph("Top Risk Drivers (Feature Contributions)", head_style))
     sorted_contribs = sorted(contribs.items(), key=lambda x: abs(x[1]), reverse=True)[:8]
     contrib_data = [['Feature', 'Patient Value', 'Direction', 'Magnitude']]
     for feat, val in sorted_contribs:
         if abs(val) < 0.001: continue
-        direction = "↑ Increases" if val > 0 else "↓ Decreases"
+        direction = "Increases" if val > 0 else "Decreases"
         color = '#DC2626' if val > 0 else '#059669'
         contrib_data.append([feat, str(patient.get(feat, '-'))[:10],
                              Paragraph(f'<font color="{color}">{direction}</font>', body_style),
                              f"{abs(val):.3f}"])
-
     contrib_table = Table(contrib_data, colWidths=[5*cm, 4*cm, 4*cm, 3*cm])
     contrib_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), navy),
@@ -450,45 +414,40 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
     ]))
     story.append(contrib_table)
 
-    # Clinical flags
     if flags:
         story.append(Paragraph("Clinical Flags", head_style))
         for fmsg in flags:
             story.append(Paragraph(f"• {fmsg}", body_style))
 
-    # Action
     story.append(Paragraph("Suggested Clinical Action", head_style))
     if prob >= 0.50:
         action = ("<b>URGENT:</b> Cardiology referral recommended. Consider stress echocardiography, "
                   "CT coronary angiography, or invasive catheterisation. Initiate guideline-directed "
                   "medical therapy (aspirin, statin, beta-blocker per ACC/AHA 2019).")
     elif prob >= threshold:
-        action = ("<b>Action needed:</b> Cardiology review within 2–4 weeks. Consider non-invasive cardiac imaging. "
-                  "Optimise BP, lipids, and glycaemia. Reassess in 3–6 months.")
+        action = ("<b>Action needed:</b> Cardiology review within 2-4 weeks. Consider non-invasive cardiac imaging. "
+                  "Optimise BP, lipids, and glycaemia. Reassess in 3-6 months.")
     else:
         action = ("<b>Continue monitoring:</b> Low-risk profile. Primary prevention: lifestyle modification, "
                   "BP and cholesterol targets. Routine follow-up at next scheduled primary care visit.")
     story.append(Paragraph(action, body_style))
 
-    # Disclaimer
     story.append(Spacer(1, 0.4*cm))
     disclaimer_style = ParagraphStyle('Disc', parent=styles['Normal'],
                                        fontSize=8, textColor=HexColor('#B91C1C'),
                                        alignment=TA_CENTER, fontName='Helvetica-Oblique')
     story.append(Paragraph(
-        "⚠ RESEARCH USE ONLY — This report is generated by a machine learning model trained on "
-        "the Cleveland Heart Disease dataset (1981–1984, n=302). It is not validated for clinical "
+        "RESEARCH USE ONLY - This report is generated by a machine learning model trained on "
+        "the Cleveland Heart Disease dataset (1981-1984, n=302). It is not validated for clinical "
         "decision-making. Always consult a qualified cardiologist.",
         disclaimer_style))
 
-    # Footer
     story.append(Spacer(1, 0.3*cm))
     footer_style = ParagraphStyle('Foot', parent=styles['Normal'],
                                    fontSize=7, textColor=HexColor('#8894B8'),
                                    alignment=TA_CENTER)
     story.append(Paragraph(
-        "CardioRisk AI v2 · HayMedics Academy · TRIPOD-AI Compliant<br/>"
-        f"Generated {timestamp}",
+        f"CardioRisk AI v2 · HayMedics Academy · TRIPOD-AI Compliant<br/>Generated {timestamp}",
         footer_style))
 
     doc.build(story)
@@ -496,7 +455,7 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
     return buffer
 
 # ══════════════════════════════════════════════════════════════
-# SESSION STATE for what-if simulator
+# SESSION STATE
 # ══════════════════════════════════════════════════════════════
 if 'last_prediction' not in st.session_state:
     st.session_state.last_prediction = None
@@ -521,6 +480,9 @@ with st.sidebar:
         "🎛️  What-If Simulator",
         "📖  About the Project"
     ], label_visibility="collapsed")
+
+    # Initialise predict variable for all pages
+    predict = False
 
     if "Risk Assessment" in page:
         st.markdown('<div class="sb-section">Demographics</div>', unsafe_allow_html=True)
@@ -556,8 +518,6 @@ with st.sidebar:
                                 index=1, key="thal_main")
         st.markdown("<br>", unsafe_allow_html=True)
         predict = st.button("🫀  Analyse CAD Risk", use_container_width=True, key="predict_btn")
-    else:
-        predict = False
 
     st.markdown("""
     <div style='padding:16px 20px;margin-top:20px;border-top:1px solid rgba(245,166,35,0.25);'>
@@ -576,7 +536,7 @@ st.markdown(f"""
     <div>
       <div class="header-app-name">CardioRisk<em>AI</em><span class="ver">v2.0</span></div>
       <div class="header-sub">
-        HayMedics Academy · CAD Risk Assessment · Now with SHAP-style explanations, PDF reports & What-If Simulator
+        HayMedics Academy · CAD Risk Assessment · SHAP explanations · PDF reports · What-If Simulator
       </div>
     </div>
   </div>
@@ -611,7 +571,6 @@ st.markdown(f'<div class="metric-strip">{chips}</div>', unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════════════
 if "Risk Assessment" in page:
     if not predict and st.session_state.last_prediction is None:
-        # Welcome state
         col_w, col_ref = st.columns([3, 2], gap="large")
         with col_w:
             st.markdown('<div class="sec-head">✨ What\'s New in v2</div>', unsafe_allow_html=True)
@@ -626,9 +585,9 @@ if "Risk Assessment" in page:
                 CardioRisk AI v2 builds on the trusted v1 model with new clinical-grade features:
               </p>
               <ul style="color:#4A5580;font-size:0.87rem;line-height:1.9;padding-left:20px;">
-                <li><strong>SHAP-style feature explanations</strong> — see exactly which clinical factors drove the prediction</li>
-                <li><strong>Downloadable PDF clinical reports</strong> — share with cardiologists or save to patient records</li>
-                <li><strong>What-If Simulator</strong> — explore how risk changes when clinical variables are modified</li>
+                <li><strong>SHAP-style feature explanations</strong> - see exactly which clinical factors drove the prediction</li>
+                <li><strong>Downloadable PDF clinical reports</strong> - share with cardiologists or save to patient records</li>
+                <li><strong>What-If Simulator</strong> - explore how risk changes when clinical variables are modified</li>
               </ul>
               <p style="color:#4A5580;font-size:0.88rem;line-height:1.9;margin-top:12px;">
                 Fill the patient data in the <strong style="color:#1B3080;">left sidebar</strong>
@@ -636,7 +595,7 @@ if "Risk Assessment" in page:
               </p>
             </div>
             <div class="alert alert-warn">
-              ⚠ <strong>Research Use Only.</strong> Based on Cleveland Clinic data (1981–1984, n=302).
+              ⚠ <strong>Research Use Only.</strong> Based on Cleveland Clinic data (1981-1984, n=302).
               Not validated for clinical use. Always consult a qualified cardiologist.
             </div>
             """, unsafe_allow_html=True)
@@ -660,7 +619,6 @@ if "Risk Assessment" in page:
             st.markdown('</div>', unsafe_allow_html=True)
 
     else:
-        # Run prediction if button clicked
         if predict:
             ca_in   = np.nan if (isinstance(ca_sel,float) and np.isnan(ca_sel)) else ca_sel
             thal_in = np.nan if (isinstance(thal_sel,float) and np.isnan(thal_sel)) else thal_sel
@@ -674,7 +632,6 @@ if "Risk Assessment" in page:
                 prob, _ = predict_one(patient)
                 contribs, _ = feature_contributions(patient)
 
-            # Build flags
             exp = 220 - age
             flags = []
             if thalach < 0.85*exp:
@@ -699,7 +656,6 @@ if "Risk Assessment" in page:
             st.session_state.last_contribs = contribs
             st.session_state.last_flags = flags
 
-        # Display results
         prob     = st.session_state.last_prediction
         patient  = st.session_state.last_patient
         contribs = st.session_state.last_contribs
@@ -715,7 +671,6 @@ if "Risk Assessment" in page:
             rc, rl, rm = "low", "LOW RISK", "num-low"
             ri, rt = "🟢", "tag-low"
 
-        # ── Top section: result card + gauge + PDF download ──
         col_res, col_action = st.columns([5, 4], gap="large")
 
         with col_res:
@@ -738,7 +693,6 @@ if "Risk Assessment" in page:
         with col_action:
             st.markdown('<div class="sec-head">📄 Download Report & Next Steps</div>', unsafe_allow_html=True)
 
-            # PDF download
             try:
                 pdf_buffer = generate_pdf_report(patient, prob, contribs, THRESHOLD, flags)
                 ts = datetime.now().strftime("%Y%m%d_%H%M")
@@ -750,7 +704,7 @@ if "Risk Assessment" in page:
                     use_container_width=True
                 )
             except Exception as e:
-                st.warning(f"PDF generation requires `reportlab`. Add to requirements.txt: `reportlab`")
+                st.warning(f"PDF generation requires `reportlab` package.")
 
             st.markdown("<br>", unsafe_allow_html=True)
             if prob >= 0.50:
@@ -759,22 +713,18 @@ if "Risk Assessment" in page:
                 or catheterisation. Initiate ACC/AHA 2019 therapy.</div>""", unsafe_allow_html=True)
             elif prob >= THRESHOLD:
                 st.markdown("""<div class="alert alert-warn">
-                <strong>⚠ Action needed:</strong> Cardiology review within 2–4 weeks.
+                <strong>⚠ Action needed:</strong> Cardiology review within 2-4 weeks.
                 Optimise BP, lipids, glycaemia.</div>""", unsafe_allow_html=True)
             else:
                 st.markdown("""<div class="alert alert-success">
                 <strong>✓ Continue monitoring:</strong> Low-risk profile.
                 Primary prevention measures.</div>""", unsafe_allow_html=True)
 
-            # Clinical flags compact
             if flags:
                 st.markdown('<div class="sec-head">⚑ Clinical Flags</div>', unsafe_allow_html=True)
                 for fmsg in flags[:5]:
                     st.markdown(f'<div class="alert alert-info">ℹ {fmsg}</div>', unsafe_allow_html=True)
 
-        # ══════════════════════════════════════════════════════════
-        # FEATURE EXPLANATIONS (SHAP-style)
-        # ══════════════════════════════════════════════════════════
         st.markdown('<div class="sec-head" style="margin-top:24px;">🧠 Why This Prediction? — Feature Contributions</div>',
                     unsafe_allow_html=True)
 
@@ -854,7 +804,6 @@ elif "What-If" in page:
             sim_oldpeak  = st.slider("ST Depression (mm)", 0.0, 6.5, float(baseline['oldpeak']), 0.1, key="sim_op")
 
         with col_sim_r:
-            # Run what-if prediction
             sim_patient = baseline.copy()
             sim_patient['age']      = sim_age
             sim_patient['trestbps'] = sim_trestbps
@@ -865,9 +814,12 @@ elif "What-If" in page:
             sim_prob, _ = predict_one(sim_patient)
             delta = sim_prob - baseline_prob
 
-            if sim_prob >= 0.5:    sim_rc, sim_rl = "high", "HIGH RISK"
-            elif sim_prob >= THRESHOLD: sim_rc, sim_rl = "moderate", "MODERATE RISK"
-            else:                  sim_rc, sim_rl = "low", "LOW RISK"
+            if sim_prob >= 0.5:
+                sim_rc, sim_rl = "high", "HIGH RISK"
+            elif sim_prob >= THRESHOLD:
+                sim_rc, sim_rl = "moderate", "MODERATE RISK"
+            else:
+                sim_rc, sim_rl = "low", "LOW RISK"
 
             num_class = f"num-{sim_rc}"
             tag_class = f"tag-{sim_rc}"
@@ -888,50 +840,53 @@ elif "What-If" in page:
             </div>
             """, unsafe_allow_html=True)
 
-            # Mini gauge
             fig_sim = plot_gauge(sim_prob)
             st.pyplot(fig_sim, use_container_width=True)
             plt.close(fig_sim)
 
-    for w in warnings_list:
-        st.markdown(f'<div class="alert alert-warn">{w}</div>',
-                    unsafe_allow_html=True)
-        # ── Clinical plausibility check ──
+        # ── Clinical plausibility check ────────
         warnings_list = []
-        denom = max(220 - sim_age, 1)
-        sim_pct_max = sim_thalach / denom
+        sim_pct_max = sim_thalach / (220 - sim_age) if (220 - sim_age) > 0 else 1.0
 
         if sim_pct_max < 0.65:
             warnings_list.append(
                 f"⚠ Max HR of {sim_thalach} bpm is only {sim_pct_max:.0%} of predicted max "
                 f"({220-sim_age} bpm) for age {sim_age} — severe chronotropic incompetence. "
-                f"This is clinically implausible for an otherwise healthy patient."
+                f"This is clinically implausible for an otherwise healthy patient and may artificially inflate risk."
             )
         if sim_age < 40 and sim_oldpeak >= 2.0:
             warnings_list.append(
                 f"⚠ ST depression {sim_oldpeak} mm at age {sim_age} is unusual — "
-                f"more typical in older patients with established CAD."
+                f"this finding is more typical in older patients with established CAD."
             )
         if sim_age < 30 and sim_trestbps >= 160:
             warnings_list.append(
-                f"⚠ Stage 2 hypertension at age {sim_age} suggests secondary causes "
-                f"(renal, endocrine) rather than primary hypertension."
+                f"⚠ Stage 2 hypertension ({sim_trestbps} mmHg) at age {sim_age} suggests secondary causes "
+                f"(renal artery stenosis, endocrine disorders) rather than primary essential hypertension."
             )
         if sim_chol >= 400:
             warnings_list.append(
-                f"⚠ Cholesterol of {sim_chol} mg/dL is extremely high — "
-                f"consider familial hypercholesterolaemia."
+                f"⚠ Cholesterol of {sim_chol} mg/dL is extremely high — consider familial hypercholesterolaemia."
+            )
+        if sim_chol < 130:
+            warnings_list.append(
+                f"ℹ Cholesterol of {sim_chol} mg/dL is unusually low — may indicate malnutrition or aggressive statin therapy."
             )
 
         if warnings_list:
             st.markdown('<div class="sec-head" style="margin-top:20px;">⚠ Clinical Plausibility Check</div>',
                         unsafe_allow_html=True)
+            st.markdown("""
+            <div class="alert alert-info">
+              💡 The simulator allows any combination of values — but not all combinations are clinically realistic.
+              Below are flags for unusual feature combinations in this simulation:
+            </div>
+            """, unsafe_allow_html=True)
             for w in warnings_list:
                 st.markdown(f'<div class="alert alert-warn">{w}</div>',
                             unsafe_allow_html=True)
-                            
+
         # Comparison table
-        
         st.markdown('<div class="sec-head" style="margin-top:20px;">📊 Side-by-Side Comparison</div>',
                     unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -973,15 +928,15 @@ elif "About" in page:
           <p style="color:#4A5580; font-size:0.87rem; line-height:1.85;">
           CardioRisk AI v2 is a TRIPOD-AI compliant ML system for Coronary Artery Disease
           risk classification, built on the Cleveland Heart Disease dataset. v2 adds
-          clinical-grade explanations, PDF reporting, and a What-If Simulator for
-          counterfactual reasoning.</p>
+          clinical-grade explanations, PDF reporting, and a What-If Simulator with
+          clinical plausibility validation.</p>
         </div>
         <div class="card">
           <h3 style="color:#0D1B4B; font-size:1.05rem;">✨ What's New in v2</h3>
           <ul style="color:#4A5580; font-size:0.86rem; line-height:1.85; padding-left:20px;">
             <li><strong>SHAP-style feature explanations</strong> via perturbation analysis</li>
             <li><strong>Downloadable PDF reports</strong> for clinical use</li>
-            <li><strong>What-If Simulator</strong> to explore counterfactuals</li>
+            <li><strong>What-If Simulator</strong> with clinical plausibility flags</li>
             <li>Enhanced UI with v2 badges and modern layout</li>
           </ul>
         </div>
@@ -1003,7 +958,7 @@ elif "About" in page:
         <div class="card">
           <h3 style="color:#0D1B4B; font-size:1.05rem;">⚠️ Known Limitations</h3>
           <ul style="color:#4A5580; font-size:0.86rem; line-height:1.85; padding-left:20px;">
-            <li>n=302, single centre (1981–1984)</li>
+            <li>n=302, single centre (1981-1984)</li>
             <li>No medication or ethnicity data</li>
             <li>FBS threshold &gt;120 vs ADA ≥126 mg/dL</li>
             <li>No external validation cohort</li>
