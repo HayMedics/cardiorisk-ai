@@ -1,9 +1,17 @@
 """
-CardioRisk AI v2 — HayMedics Academy
-FINAL CORRECTED VERSION with:
-  + SHAP-style feature contributions
+CardioRisk AI — HayMedics Academy
+COMPLETE CLINICAL DECISION SUPPORT SYSTEM
+
+Features:
+  + Risk Assessment with SHAP-style explanations
   + Downloadable PDF clinical report
   + What-If simulator with clinical plausibility checks
+  + Patient history (last 10 predictions in session)
+  + Risk comparison vs dataset distribution
+  + Confidence intervals via Monte Carlo
+  + Batch CSV upload (multiple patients)
+  + External validation page
+
 Research Use Only
 """
 
@@ -17,7 +25,7 @@ import matplotlib.patches as mpatches
 warnings.filterwarnings("ignore")
 
 st.set_page_config(
-    page_title="CardioRisk AI v2 | HayMedics Academy",
+    page_title="CardioRisk AI | HayMedics Academy",
     page_icon="🫀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -98,10 +106,6 @@ section[data-testid="stSidebar"] .stRadio label {
 .header-left { display:flex; align-items:center; gap:16px; }
 .header-app-name { font-size:1.5rem; font-weight:800; color:white; letter-spacing:-0.5px; line-height:1.1; }
 .header-app-name em { color:#F5A623; font-style:normal; }
-.header-app-name span.ver {
-    background:#F5A623; color:#0D1B4B; padding:3px 10px;
-    border-radius:6px; font-size:0.7rem; margin-left:8px; vertical-align:middle;
-}
 .header-sub { font-size:0.72rem; color:#94A3C8; margin-top:3px; }
 .badge { padding:5px 14px; border-radius:20px; font-size:0.68rem; font-weight:600; letter-spacing:0.8px; text-transform:uppercase; }
 .badge-warn { background:rgba(245,166,35,0.15); border:1.5px solid #F5A623; color:#F5A623; }
@@ -136,6 +140,7 @@ section[data-testid="stSidebar"] .stRadio label {
 .tag-moderate { background:#D97706; color:white; }
 .tag-low { background:#059669; color:white; }
 .result-caption { font-size:0.78rem; color:#6B7BB5; margin-top:10px; }
+.result-ci { font-size:0.85rem; color:#1B3080; margin-top:6px; font-family:'JetBrains Mono',monospace; }
 
 .alert { display:flex; gap:10px; align-items:flex-start; padding:10px 14px; border-radius:10px;
     margin:6px 0; font-size:0.82rem; line-height:1.55; }
@@ -180,6 +185,42 @@ div.stDownloadButton > button {
     font-size: 0.7rem; font-weight: 700; letter-spacing: 1px;
     text-transform: uppercase; margin: 3px;
 }
+
+.history-row {
+    background: white;
+    border: 1px solid #DDE3F5;
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.15s;
+}
+.history-row:hover {
+    border-color: #F5A623;
+    box-shadow: 0 2px 8px rgba(245,166,35,0.15);
+}
+.history-time {
+    font-size: 0.72rem;
+    color: #8894B8;
+    font-family: 'JetBrains Mono', monospace;
+}
+.history-detail {
+    font-size: 0.82rem;
+    color: #0D1B4B;
+    font-weight: 500;
+}
+.history-prob {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+}
+.history-high { background: #FFE8E8; color: #DC2626; }
+.history-mod  { background: #FFF5D6; color: #D97706; }
+.history-low  { background: #E6FFF2; color: #059669; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -193,6 +234,19 @@ def load_model():
         c = json.load(f)
     return m, p, c
 
+@st.cache_data(show_spinner=False)
+def load_reference_dataset():
+    """Load the original Cleveland dataset for comparison charts"""
+    d = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(d, "heart.csv")
+    if os.path.exists(csv_path):
+        try:
+            df = pd.read_csv(csv_path)
+            return df
+        except Exception:
+            return None
+    return None
+
 try:
     model, preprocessor, cfg = load_model()
     THRESHOLD = cfg["OPTIMAL_THRESHOLD"]
@@ -200,6 +254,8 @@ try:
 except Exception as e:
     ok = False
     err = str(e)
+
+reference_df = load_reference_dataset() if ok else None
 
 # ── Feature engineering ─────────────────────────────────────
 def engineer(df):
@@ -221,6 +277,47 @@ def predict_one(patient_dict):
     X = preprocessor.transform(engineer(df))
     prob = float(model.predict_proba(X)[0,1])
     return prob, X
+
+def predict_batch(df):
+    """Predict on a dataframe of multiple patients"""
+    X = preprocessor.transform(engineer(df))
+    probs = model.predict_proba(X)[:, 1]
+    return probs
+
+# ── Confidence intervals via Monte Carlo perturbation ──
+def predict_with_ci(patient_dict, n_samples=50):
+    """
+    Estimate prediction uncertainty by adding small noise to continuous features.
+    Returns: mean_prob, lower_ci, upper_ci
+    """
+    base_prob, _ = predict_one(patient_dict)
+    probs = [base_prob]
+
+    # Noise levels (clinically reasonable measurement uncertainty)
+    noise_levels = {
+        'trestbps': 5,    # ±5 mmHg measurement error
+        'chol': 10,       # ±10 mg/dL lab variation
+        'thalach': 5,     # ±5 bpm measurement variation
+        'oldpeak': 0.2,   # ±0.2 mm ECG measurement
+    }
+
+    np.random.seed(42)
+    for _ in range(n_samples):
+        perturbed = patient_dict.copy()
+        for feat, sigma in noise_levels.items():
+            if feat in perturbed and perturbed[feat] is not None:
+                perturbed[feat] = perturbed[feat] + np.random.normal(0, sigma)
+        # Keep values in clinical range
+        perturbed['trestbps'] = max(60, min(250, perturbed['trestbps']))
+        perturbed['chol']     = max(50, min(700, perturbed['chol']))
+        perturbed['thalach']  = max(40, min(220, perturbed['thalach']))
+        perturbed['oldpeak']  = max(0, min(8, perturbed['oldpeak']))
+
+        p, _ = predict_one(perturbed)
+        probs.append(p)
+
+    probs = np.array(probs)
+    return probs.mean(), np.percentile(probs, 2.5), np.percentile(probs, 97.5)
 
 # ── Feature contribution (perturbation-based) ──
 def feature_contributions(patient_dict):
@@ -293,8 +390,55 @@ def plot_contributions(contribs):
     plt.tight_layout()
     return fig
 
+def plot_population_comparison(patient_dict, reference_df):
+    """Show where this patient sits in the population distribution"""
+    if reference_df is None:
+        return None
+
+    features = [('age', 'Age (years)'),
+                ('trestbps', 'Resting BP (mmHg)'),
+                ('chol', 'Cholesterol (mg/dL)'),
+                ('thalach', 'Max HR (bpm)'),
+                ('oldpeak', 'ST Depression (mm)')]
+
+    fig, axes = plt.subplots(1, 5, figsize=(16, 3.2))
+    fig.patch.set_facecolor('white')
+
+    for ax, (feat, label) in zip(axes, features):
+        if feat not in reference_df.columns:
+            continue
+        data = reference_df[feat].dropna()
+        patient_val = patient_dict.get(feat)
+
+        # Histogram
+        ax.hist(data, bins=20, color='#94A3C8', alpha=0.6, edgecolor='white', linewidth=0.5)
+        # Patient marker
+        ax.axvline(patient_val, color='#DC2626', linewidth=2.5, label=f'Patient: {patient_val}')
+        # Median line
+        ax.axvline(data.median(), color='#059669', linewidth=1.5, linestyle='--',
+                   alpha=0.7, label=f'Median: {data.median():.0f}')
+
+        # Percentile of patient
+        percentile = (data < patient_val).mean() * 100
+
+        ax.set_title(label, fontsize=9, color='#0D1B4B', fontweight='600')
+        ax.set_xlabel(f'{percentile:.0f}th percentile',
+                      fontsize=8, color='#8894B8', style='italic')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#DDE3F5')
+        ax.spines['bottom'].set_color('#DDE3F5')
+        ax.tick_params(labelsize=7, colors='#8894B8')
+        ax.set_yticks([])
+        ax.legend(fontsize=6, loc='upper right', frameon=False)
+
+    plt.suptitle('Where This Patient Sits vs Dataset Population (n=302)',
+                 fontsize=11, color='#0D1B4B', fontweight='700', y=1.02)
+    plt.tight_layout()
+    return fig
+
 # ── PDF Report Generation ───────────────────────────────────
-def generate_pdf_report(patient, prob, contribs, threshold, flags):
+def generate_pdf_report(patient, prob, contribs, threshold, flags, ci_lower=None, ci_upper=None):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
@@ -346,8 +490,11 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
 
     label_full = "Low Risk" if prob < threshold else ("Moderate Risk" if prob < 0.5 else "High Risk")
     result_color = '#059669' if prob < threshold else ('#D97706' if prob < 0.5 else '#DC2626')
+
+    ci_text = f" (95% CI: {ci_lower:.1%}-{ci_upper:.1%})" if (ci_lower is not None and ci_upper is not None) else ""
+
     result_data = [[
-        Paragraph(f'<b>CAD Probability:</b> <font size=20 color="{result_color}">{prob:.1%}</font>', body_style),
+        Paragraph(f'<b>CAD Probability:</b> <font size=20 color="{result_color}">{prob:.1%}</font>{ci_text}', body_style),
         Paragraph(f'<b>Category:</b> <font color="{result_color}"><b>{label_full.upper()}</b></font>', body_style),
         Paragraph(f'<b>Decision Threshold:</b> {threshold:.0%}', body_style),
     ]]
@@ -447,7 +594,7 @@ def generate_pdf_report(patient, prob, contribs, threshold, flags):
                                    fontSize=7, textColor=HexColor('#8894B8'),
                                    alignment=TA_CENTER)
     story.append(Paragraph(
-        f"CardioRisk AI v2 · HayMedics Academy · TRIPOD-AI Compliant<br/>Generated {timestamp}",
+        f"CardioRisk AI · HayMedics Academy · TRIPOD-AI Compliant<br/>Generated {timestamp}",
         footer_style))
 
     doc.build(story)
@@ -465,6 +612,10 @@ if 'last_contribs' not in st.session_state:
     st.session_state.last_contribs = None
 if 'last_flags' not in st.session_state:
     st.session_state.last_flags = []
+if 'last_ci' not in st.session_state:
+    st.session_state.last_ci = None
+if 'prediction_history' not in st.session_state:
+    st.session_state.prediction_history = []
 
 # ══════════════════════════════════════════════════════════════
 # SIDEBAR
@@ -478,10 +629,12 @@ with st.sidebar:
     page = st.radio("", [
         "🫀  Risk Assessment",
         "🎛️  What-If Simulator",
+        "📂  Batch Upload",
+        "🔁  Patient History",
+        "🧪  External Validation",
         "📖  About the Project"
     ], label_visibility="collapsed")
 
-    # Initialise predict variable for all pages
     predict = False
 
     if "Risk Assessment" in page:
@@ -534,14 +687,13 @@ st.markdown(f"""
   <div class="header-left">
     {icon_tag}
     <div>
-      <div class="header-app-name">CardioRisk<em>AI</em><span class="ver">v2.0</span></div>
+      <div class="header-app-name">CardioRisk<em>AI</em></div>
       <div class="header-sub">
-        HayMedics Academy · CAD Risk Assessment · SHAP explanations · PDF reports · What-If Simulator
+        HayMedics Academy · CAD Risk Assessment · Explainable · Batch · Validation
       </div>
     </div>
   </div>
   <div style="display:flex;gap:10px;">
-    <span class="badge badge-new">✨ V2 Features</span>
     <span class="badge badge-blue">TRIPOD-AI</span>
     <span class="badge badge-warn">⚠ Research Only</span>
   </div>
@@ -573,22 +725,24 @@ if "Risk Assessment" in page:
     if not predict and st.session_state.last_prediction is None:
         col_w, col_ref = st.columns([3, 2], gap="large")
         with col_w:
-            st.markdown('<div class="sec-head">✨ What\'s New in v2</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sec-head">🫀 Welcome to CardioRisk AI</div>', unsafe_allow_html=True)
             st.markdown("""
             <div class="card">
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
                 <span class="feature-pill">🧠 SHAP Explanations</span>
                 <span class="feature-pill">📄 PDF Reports</span>
                 <span class="feature-pill">🎛️ What-If Simulator</span>
+                <span class="feature-pill">📂 Batch Upload</span>
+                <span class="feature-pill">📈 Confidence Intervals</span>
+                <span class="feature-pill">📊 Population Comparison</span>
+                <span class="feature-pill">🔁 Patient History</span>
+                <span class="feature-pill">🧪 External Validation</span>
               </div>
               <p style="color:#4A5580;font-size:0.9rem;line-height:1.9;">
-                CardioRisk AI v2 builds on the trusted v1 model with new clinical-grade features:
+                CardioRisk AI is a TRIPOD-AI compliant clinical decision support tool combining a
+                calibrated stacking ensemble model with comprehensive explainability, validation,
+                and uncertainty quantification.
               </p>
-              <ul style="color:#4A5580;font-size:0.87rem;line-height:1.9;padding-left:20px;">
-                <li><strong>SHAP-style feature explanations</strong> - see exactly which clinical factors drove the prediction</li>
-                <li><strong>Downloadable PDF clinical reports</strong> - share with cardiologists or save to patient records</li>
-                <li><strong>What-If Simulator</strong> - explore how risk changes when clinical variables are modified</li>
-              </ul>
               <p style="color:#4A5580;font-size:0.88rem;line-height:1.9;margin-top:12px;">
                 Fill the patient data in the <strong style="color:#1B3080;">left sidebar</strong>
                 and click <strong style="color:#F5A623;">Analyse CAD Risk</strong>.
@@ -628,9 +782,10 @@ if "Risk Assessment" in page:
                 'fbs':fbs,'restecg':restecg,'thalach':thalach,'exang':exang,
                 'oldpeak':oldpeak,'slope':slope,'ca':ca_in,'thal':thal_in
             }
-            with st.spinner("🔍 Analysing patient data and computing explanations..."):
+            with st.spinner("🔍 Analysing patient data, computing explanations, and estimating uncertainty..."):
                 prob, _ = predict_one(patient)
                 contribs, _ = feature_contributions(patient)
+                _, ci_lower, ci_upper = predict_with_ci(patient, n_samples=30)
 
             exp = 220 - age
             flags = []
@@ -655,11 +810,25 @@ if "Risk Assessment" in page:
             st.session_state.last_patient = patient
             st.session_state.last_contribs = contribs
             st.session_state.last_flags = flags
+            st.session_state.last_ci = (ci_lower, ci_upper)
+
+            # Save to history (cap at 10)
+            history_entry = {
+                'timestamp': datetime.now().strftime("%H:%M:%S"),
+                'age': age,
+                'sex': 'M' if sex == 1 else 'F',
+                'prob': prob,
+                'patient': patient.copy()
+            }
+            st.session_state.prediction_history.insert(0, history_entry)
+            st.session_state.prediction_history = st.session_state.prediction_history[:10]
 
         prob     = st.session_state.last_prediction
         patient  = st.session_state.last_patient
         contribs = st.session_state.last_contribs
         flags    = st.session_state.last_flags
+        ci       = st.session_state.last_ci
+        ci_lower, ci_upper = (ci if ci else (None, None))
 
         if prob >= 0.50:
             rc, rl, rm = "high", "HIGH RISK", "num-high"
@@ -675,10 +844,16 @@ if "Risk Assessment" in page:
 
         with col_res:
             st.markdown('<div class="sec-head">📊 Risk Assessment Result</div>', unsafe_allow_html=True)
+
+            ci_html = ""
+            if ci_lower is not None:
+                ci_html = f'<div class="result-ci">95% CI: {ci_lower:.1%} — {ci_upper:.1%}</div>'
+
             st.markdown(f"""
             <div class="result-{rc}">
               <div class="{rm} big-num">{prob:.1%}</div>
               <span class="risk-tag {rt}">{ri} {rl}</span>
+              {ci_html}
               <div class="result-caption">
                 CAD probability &nbsp;·&nbsp; Threshold = {THRESHOLD:.0%}<br>
                 {"Disease likely — refer for cardiac evaluation" if prob >= THRESHOLD
@@ -694,7 +869,7 @@ if "Risk Assessment" in page:
             st.markdown('<div class="sec-head">📄 Download Report & Next Steps</div>', unsafe_allow_html=True)
 
             try:
-                pdf_buffer = generate_pdf_report(patient, prob, contribs, THRESHOLD, flags)
+                pdf_buffer = generate_pdf_report(patient, prob, contribs, THRESHOLD, flags, ci_lower, ci_upper)
                 ts = datetime.now().strftime("%Y%m%d_%H%M")
                 st.download_button(
                     label="📄  Download Clinical PDF Report",
@@ -704,7 +879,7 @@ if "Risk Assessment" in page:
                     use_container_width=True
                 )
             except Exception as e:
-                st.warning(f"PDF generation requires `reportlab` package.")
+                st.warning("PDF generation requires `reportlab` package.")
 
             st.markdown("<br>", unsafe_allow_html=True)
             if prob >= 0.50:
@@ -760,6 +935,22 @@ if "Risk Assessment" in page:
                   </span>
                 </div>""", unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
+
+        # Population comparison chart
+        if reference_df is not None:
+            st.markdown('<div class="sec-head" style="margin-top:24px;">📊 Patient vs Dataset Population</div>',
+                        unsafe_allow_html=True)
+            fig_comp = plot_population_comparison(patient, reference_df)
+            if fig_comp:
+                st.pyplot(fig_comp, use_container_width=True)
+                plt.close(fig_comp)
+                st.markdown("""
+                <div class="alert alert-info">
+                  💡 <strong>Interpretation:</strong> Red lines show this patient's values.
+                  Green dashed lines show the dataset median. The percentile tells you
+                  where this patient ranks among the 302 patients in the training data.
+                </div>
+                """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════
 # PAGE — WHAT-IF SIMULATOR
@@ -915,6 +1106,339 @@ elif "What-If" in page:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════
+# PAGE — BATCH UPLOAD
+# ══════════════════════════════════════════════════════════════
+elif "Batch Upload" in page:
+    st.markdown('<div class="sec-head">📂 Batch Patient Prediction</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="card">
+      <p style="color:#4A5580;font-size:0.9rem;line-height:1.8;">
+        Upload a CSV file with multiple patients to get CAD risk predictions for all at once.
+        The file must contain the same 13 features as the Cleveland dataset.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_up, col_template = st.columns([3, 2], gap="large")
+
+    with col_up:
+        st.markdown('<div class="sec-head">📤 Upload CSV</div>', unsafe_allow_html=True)
+        uploaded_file = st.file_uploader("Choose a CSV file", type=['csv'], key="batch_upload")
+
+    with col_template:
+        st.markdown('<div class="sec-head">📥 Download Template</div>', unsafe_allow_html=True)
+        template_df = pd.DataFrame([{
+            'age': 55, 'sex': 1, 'cp': 0, 'trestbps': 140, 'chol': 250,
+            'fbs': 0, 'restecg': 1, 'thalach': 130, 'exang': 1,
+            'oldpeak': 2.5, 'slope': 0, 'ca': 2, 'thal': 3.0
+        }, {
+            'age': 45, 'sex': 0, 'cp': 2, 'trestbps': 120, 'chol': 200,
+            'fbs': 0, 'restecg': 0, 'thalach': 170, 'exang': 0,
+            'oldpeak': 0.5, 'slope': 2, 'ca': 0, 'thal': 2.0
+        }])
+        csv_template = template_df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Template CSV",
+            data=csv_template,
+            file_name="cardiorisk_template.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+    if uploaded_file is not None:
+        try:
+            batch_df = pd.read_csv(uploaded_file)
+            required_cols = ['age','sex','cp','trestbps','chol','fbs','restecg',
+                             'thalach','exang','oldpeak','slope','ca','thal']
+            missing = [c for c in required_cols if c not in batch_df.columns]
+
+            if missing:
+                st.markdown(f"""
+                <div class="alert alert-danger">
+                  ⚠ <strong>Missing required columns:</strong> {', '.join(missing)}<br>
+                  Please use the template format above.
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                with st.spinner(f"🔍 Predicting CAD risk for {len(batch_df)} patients..."):
+                    # Handle ca==4 as missing
+                    batch_df.loc[batch_df['ca'] == 4, 'ca'] = np.nan
+                    probs = predict_batch(batch_df[required_cols])
+                    batch_df['CAD_probability'] = probs
+                    batch_df['risk_category'] = batch_df['CAD_probability'].apply(
+                        lambda p: 'HIGH' if p >= 0.5 else ('MODERATE' if p >= THRESHOLD else 'LOW')
+                    )
+                    batch_df['action_needed'] = batch_df['CAD_probability'].apply(
+                        lambda p: 'Urgent referral' if p >= 0.5 else ('Cardiology review' if p >= THRESHOLD else 'Monitor')
+                    )
+
+                st.markdown(f'<div class="sec-head">✅ Predictions Complete ({len(batch_df)} patients)</div>',
+                            unsafe_allow_html=True)
+
+                # Summary stats
+                n_high = (batch_df['risk_category'] == 'HIGH').sum()
+                n_mod  = (batch_df['risk_category'] == 'MODERATE').sum()
+                n_low  = (batch_df['risk_category'] == 'LOW').sum()
+
+                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                with col_s1:
+                    st.markdown(f"""<div class="metric-chip" style="min-width:auto;width:100%;">
+                        <span class="metric-chip-label">Total</span>
+                        <span class="metric-chip-val">{len(batch_df)}</span></div>""",
+                        unsafe_allow_html=True)
+                with col_s2:
+                    st.markdown(f"""<div class="metric-chip" style="min-width:auto;width:100%;border-color:#DC2626;">
+                        <span class="metric-chip-label" style="color:#DC2626;">High Risk</span>
+                        <span class="metric-chip-val" style="color:#DC2626;">{n_high}</span></div>""",
+                        unsafe_allow_html=True)
+                with col_s3:
+                    st.markdown(f"""<div class="metric-chip" style="min-width:auto;width:100%;border-color:#D97706;">
+                        <span class="metric-chip-label" style="color:#D97706;">Moderate</span>
+                        <span class="metric-chip-val" style="color:#D97706;">{n_mod}</span></div>""",
+                        unsafe_allow_html=True)
+                with col_s4:
+                    st.markdown(f"""<div class="metric-chip" style="min-width:auto;width:100%;border-color:#059669;">
+                        <span class="metric-chip-label" style="color:#059669;">Low Risk</span>
+                        <span class="metric-chip-val" style="color:#059669;">{n_low}</span></div>""",
+                        unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # Sort by probability (highest first)
+                batch_df_sorted = batch_df.sort_values('CAD_probability', ascending=False)
+                st.dataframe(batch_df_sorted, use_container_width=True, height=400)
+
+                # Download
+                csv_out = batch_df_sorted.to_csv(index=False)
+                ts = datetime.now().strftime("%Y%m%d_%H%M")
+                st.download_button(
+                    label="📥 Download Results as CSV",
+                    data=csv_out,
+                    file_name=f"CardioRisk_BatchResults_{ts}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+        except Exception as e:
+            st.markdown(f"""
+            <div class="alert alert-danger">
+              ⚠ <strong>Error processing file:</strong> {str(e)}<br>
+              Please check the file format and try again.
+            </div>
+            """, unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════
+# PAGE — PATIENT HISTORY
+# ══════════════════════════════════════════════════════════════
+elif "Patient History" in page:
+    st.markdown('<div class="sec-head">🔁 Patient Prediction History (This Session)</div>',
+                unsafe_allow_html=True)
+
+    if not st.session_state.prediction_history:
+        st.markdown("""
+        <div class="alert alert-info">
+        ℹ <strong>No predictions yet.</strong> Go to the <strong>Risk Assessment</strong> page
+        and run some predictions. They'll appear here automatically.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="card">
+          <p style="color:#4A5580;font-size:0.9rem;">
+            Showing your last <strong>{len(st.session_state.prediction_history)}</strong> predictions
+            from this session (max 10). History is cleared when you close the browser tab.
+          </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        for i, entry in enumerate(st.session_state.prediction_history):
+            p = entry['prob']
+            if p >= 0.5:
+                prob_class = "history-high"; cat = "HIGH"
+            elif p >= THRESHOLD:
+                prob_class = "history-mod"; cat = "MOD"
+            else:
+                prob_class = "history-low"; cat = "LOW"
+
+            patient_data = entry['patient']
+            cp_map = {0:"Typical", 1:"Atypical", 2:"Non-anginal", 3:"Asymptomatic"}
+
+            st.markdown(f"""
+            <div class="history-row">
+              <div>
+                <span class="history-time">#{i+1} · {entry['timestamp']}</span><br>
+                <span class="history-detail">
+                  {entry['age']}yo {entry['sex']} ·
+                  CP: {cp_map.get(patient_data['cp'],'?')} ·
+                  BP: {patient_data['trestbps']} ·
+                  Chol: {patient_data['chol']} ·
+                  HR: {patient_data['thalach']} ·
+                  ST: {patient_data['oldpeak']:.1f}
+                </span>
+              </div>
+              <span class="history-prob {prob_class}">{p:.1%} {cat}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        if st.button("🗑️ Clear History", key="clear_history"):
+            st.session_state.prediction_history = []
+            st.rerun()
+
+# ══════════════════════════════════════════════════════════════
+# PAGE — EXTERNAL VALIDATION
+# ══════════════════════════════════════════════════════════════
+elif "External Validation" in page:
+    st.markdown('<div class="sec-head">🧪 External Validation — Test Model on Your Data</div>',
+                unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="card">
+      <p style="color:#4A5580;font-size:0.9rem;line-height:1.8;">
+        Upload a labelled dataset (with a <code>target</code> column) to evaluate how the model
+        performs on data it has never seen. This is critical for TRIPOD-AI Item 12 (external validation).
+      </p>
+      <p style="color:#6B7BB5; font-size:0.82rem; margin-top:8px;">
+        Required: 13 feature columns + <code>target</code> (0 = no disease, 1 = disease).
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    val_file = st.file_uploader("Choose validation CSV", type=['csv'], key="val_upload")
+
+    if val_file is not None:
+        try:
+            val_df = pd.read_csv(val_file)
+            required_cols = ['age','sex','cp','trestbps','chol','fbs','restecg',
+                             'thalach','exang','oldpeak','slope','ca','thal']
+
+            if 'target' not in val_df.columns:
+                st.markdown("""
+                <div class="alert alert-danger">
+                  ⚠ <strong>Missing 'target' column.</strong> External validation requires labelled data.
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                missing = [c for c in required_cols if c not in val_df.columns]
+                if missing:
+                    st.markdown(f"""
+                    <div class="alert alert-danger">
+                      ⚠ <strong>Missing required columns:</strong> {', '.join(missing)}
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    with st.spinner("🔍 Computing external validation metrics..."):
+                        val_df.loc[val_df['ca'] == 4, 'ca'] = np.nan
+                        y_true = val_df['target'].values
+                        probs = predict_batch(val_df[required_cols])
+                        y_pred = (probs >= THRESHOLD).astype(int)
+
+                        # Compute metrics
+                        from sklearn.metrics import (roc_auc_score, accuracy_score,
+                                                     confusion_matrix, precision_score,
+                                                     recall_score, f1_score)
+
+                        try:
+                            auc = roc_auc_score(y_true, probs)
+                        except Exception:
+                            auc = float('nan')
+                        acc = accuracy_score(y_true, y_pred)
+                        prec = precision_score(y_true, y_pred, zero_division=0)
+                        rec = recall_score(y_true, y_pred, zero_division=0)
+                        f1 = f1_score(y_true, y_pred, zero_division=0)
+
+                        cm = confusion_matrix(y_true, y_pred)
+                        if cm.shape == (2,2):
+                            tn, fp, fn, tp = cm.ravel()
+                            spec = tn / (tn + fp) if (tn + fp) > 0 else 0
+                            npv = tn / (tn + fn) if (tn + fn) > 0 else 0
+                        else:
+                            spec, npv = float('nan'), float('nan')
+
+                    st.markdown('<div class="sec-head">📊 External Validation Results</div>',
+                                unsafe_allow_html=True)
+
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    metrics_ext = [
+                        ('AUC-ROC', f"{auc:.3f}"),
+                        ('Accuracy', f"{acc:.3f}"),
+                        ('Sensitivity', f"{rec:.3f}"),
+                        ('Specificity', f"{spec:.3f}"),
+                        ('PPV', f"{prec:.3f}"),
+                        ('NPV', f"{npv:.3f}"),
+                        ('F1', f"{f1:.3f}"),
+                        ('N', f"{len(val_df)}"),
+                    ]
+
+                    for i, (label, val) in enumerate(metrics_ext):
+                        col = [col_m1, col_m2, col_m3, col_m4][i % 4]
+                        with col:
+                            st.markdown(f"""
+                            <div class="metric-chip" style="min-width:auto;width:100%;margin-bottom:8px;">
+                              <span class="metric-chip-label">{label}</span>
+                              <span class="metric-chip-val">{val}</span>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                    # Comparison with internal performance
+                    st.markdown('<div class="sec-head" style="margin-top:20px;">📈 Internal vs External</div>',
+                                unsafe_allow_html=True)
+                    st.markdown('<div class="card">', unsafe_allow_html=True)
+
+                    internal_auc = float(cfg.get('model_auc', 0.87))
+                    auc_drop = internal_auc - auc
+                    drop_color = '#DC2626' if auc_drop > 0.05 else ('#D97706' if auc_drop > 0.02 else '#059669')
+                    drop_msg = ('🔴 Significant drop' if auc_drop > 0.05
+                                else ('🟡 Mild drop' if auc_drop > 0.02
+                                else '🟢 Good generalisation'))
+
+                    st.markdown(f"""
+                    <div class="data-row">
+                      <span class="data-label">Internal AUC (Cleveland test set)</span>
+                      <span class="data-val">{internal_auc:.3f}</span>
+                    </div>
+                    <div class="data-row">
+                      <span class="data-label">External AUC (your data)</span>
+                      <span class="data-val">{auc:.3f}</span>
+                    </div>
+                    <div class="data-row">
+                      <span class="data-label">AUC drop</span>
+                      <span class="data-val" style="color:{drop_color};">{auc_drop:+.3f} — {drop_msg}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                    # Confusion matrix
+                    if cm.shape == (2,2):
+                        st.markdown('<div class="sec-head" style="margin-top:20px;">📋 Confusion Matrix</div>',
+                                    unsafe_allow_html=True)
+                        cm_df = pd.DataFrame(cm,
+                            index=['Actual: No Disease', 'Actual: Disease'],
+                            columns=['Predicted: No Disease', 'Predicted: Disease'])
+                        st.dataframe(cm_df, use_container_width=True)
+
+                    # Download detailed predictions
+                    val_df['CAD_probability'] = probs
+                    val_df['predicted'] = y_pred
+                    val_df['correct'] = (val_df['target'] == y_pred).astype(int)
+                    csv_val = val_df.to_csv(index=False)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M")
+                    st.download_button(
+                        label="📥 Download Detailed Predictions",
+                        data=csv_val,
+                        file_name=f"CardioRisk_ValidationResults_{ts}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+
+        except Exception as e:
+            st.markdown(f"""
+            <div class="alert alert-danger">
+              ⚠ <strong>Error processing file:</strong> {str(e)}
+            </div>
+            """, unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════
 # PAGE — ABOUT
 # ══════════════════════════════════════════════════════════════
 elif "About" in page:
@@ -926,18 +1450,22 @@ elif "About" in page:
         <div class="card">
           <h3 style="color:#0D1B4B; font-size:1.05rem;">🎯 Project Overview</h3>
           <p style="color:#4A5580; font-size:0.87rem; line-height:1.85;">
-          CardioRisk AI v2 is a TRIPOD-AI compliant ML system for Coronary Artery Disease
-          risk classification, built on the Cleveland Heart Disease dataset. v2 adds
-          clinical-grade explanations, PDF reporting, and a What-If Simulator with
-          clinical plausibility validation.</p>
+          CardioRisk AI is a TRIPOD-AI compliant ML system for Coronary Artery Disease
+          risk classification, built on the Cleveland Heart Disease dataset. It includes
+          clinical-grade explanations, PDF reporting, what-if simulation, batch processing,
+          and external validation.</p>
         </div>
         <div class="card">
-          <h3 style="color:#0D1B4B; font-size:1.05rem;">✨ What's New in v2</h3>
+          <h3 style="color:#0D1B4B; font-size:1.05rem;">✨ Features</h3>
           <ul style="color:#4A5580; font-size:0.86rem; line-height:1.85; padding-left:20px;">
-            <li><strong>SHAP-style feature explanations</strong> via perturbation analysis</li>
-            <li><strong>Downloadable PDF reports</strong> for clinical use</li>
-            <li><strong>What-If Simulator</strong> with clinical plausibility flags</li>
-            <li>Enhanced UI with v2 badges and modern layout</li>
+            <li>SHAP-style feature explanations</li>
+            <li>Downloadable PDF clinical reports</li>
+            <li>What-If Simulator with plausibility checks</li>
+            <li>Confidence intervals via Monte Carlo</li>
+            <li>Population distribution comparison</li>
+            <li>Patient history (session-based)</li>
+            <li>Batch CSV upload for multiple patients</li>
+            <li>External validation with metrics</li>
           </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -961,8 +1489,8 @@ elif "About" in page:
             <li>n=302, single centre (1981-1984)</li>
             <li>No medication or ethnicity data</li>
             <li>FBS threshold &gt;120 vs ADA ≥126 mg/dL</li>
-            <li>No external validation cohort</li>
-            <li>Feature contributions use perturbation, not true SHAP</li>
+            <li>Feature contributions via perturbation (not true SHAP)</li>
+            <li>Confidence intervals are approximate (Monte Carlo)</li>
           </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -970,7 +1498,7 @@ elif "About" in page:
 # ── Footer ────────────────────────────────────────────────────
 st.markdown("""
 <div class="footer">
-  <strong>CardioRisk AI v2.0</strong> · HayMedics Academy ·
+  <strong>CardioRisk AI</strong> · HayMedics Academy ·
   Cleveland Clinic Foundation Dataset (Detrano 1989) ·
   Stacking Ensemble · TRIPOD-AI Compliant ·
   <em>⚠ Research Use Only — Not for Clinical Decision-Making</em>
